@@ -101,7 +101,7 @@ def colminor(mat,j):
 	return (-1.)**j * np.linalg.det(subMat)
 
 #The homogenous vector describing the plane coming off of the line laser. p dot x = 0 if x is on plane
-for i in range(len())
+
 laserPlaneHomog = np.array(map(lambda j: colminor(planeMat, j) , range(4)))
 
 laserPlaneHomogs = map(lambda laserDirH: np.array(map(lambda j: colminor(planeMat(laserDirH), j) , range(4))) , laserDirHomog)
