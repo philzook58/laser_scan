@@ -10,15 +10,15 @@ baud = 57600
 angle0 = 810
 angle90= 1600
 
-PLaser = np.array([ 0.3 ,0,0])
-focal = 100.
+PLaser = np.array([0.35,0,0])
+focal = 860. 
 PCameraHomog = np.array([0.,0.,0.,1.])
 
 startmicro = 1100 
 endmicro = 1600
 microSecIncrement = 1
 
-filename = "cloudtest.pcd"
+filename = "cloudtest2.xyz"
 
 
 if port:
@@ -38,17 +38,22 @@ def move(microsec):
 	ser.write(str(microsec)+'g')
 
 
-cap = cv2.VideoCapture(1)
+cap = cv2.VideoCapture(0)
 _, frame = cap.read()
 
+height, width, _ = frame.shape
+print width
+print height
 move(angle0)
 time.sleep(1)
 _, nullframe = cap.read()
 
-pointcloud = []
+pointcloud = None
 move(startmicro)
 time.sleep(1)
 microsec = startmicro
+
+framenum = 0
 while microsec < endmicro:
 	_, frame = cap.read()
 	microsec = microsec +  microSecIncrement
@@ -65,14 +70,22 @@ while microsec < endmicro:
 
 	points = points[:,::-1] #reverse x and y so that it is now in x,y order
 	currentangle = angle(microsec)
-	np.insert(points, 2, currentangle, axis=1) #on first axis at position 2 insert the current angle
-
+	#points = np.insert(points, 2, currentangle, axis=1) #on first axis at position 2 insert the current angle
+	points = np.insert(points, 2, framenum, axis=1)
+	framenum += 1
+	laserRadian = currentangle * np.pi /180
+	laserDirHomog =  np.array([[-1.* np.cos(laserRadian), 0, np.sin(laserRadian),0]])
 
 
 	cv2.imshow('res',cv2.pyrDown(mask))
 	#mask = np.max(red) > thresh
 	#pointcloud.append(points)
-	pointcloud = np.concatenate((pointcloud,points), axis=0)
+	if pointcloud == None:
+		pointcloud = points
+		laserDirHomogs = laserDirHomog
+	else:
+		pointcloud = np.concatenate((pointcloud,points), axis=0)
+		laserDirHomogs = np.concatenate((laserDirHomogs,laserDirHomog), axis=0)
 
 	k = cv2.waitKey(50) & 0xFF
 	if k == 27:
@@ -82,18 +95,21 @@ while microsec < endmicro:
 cv2.destroyAllWindows()
 ser.close()
 
-
+#print pointcloud
 laserRadian = pointcloud[:,2] * np.pi / 180
 
 
 PLaserHomog = np.append(PLaser, [1.])
-upDirHomog = np.array([0.,0.,1.,0.])
-laserDirHomog = np.array([-1.* np.cos(laserRadian), np.sin(laserRadian), 0., 0.])
+upDirHomog = np.array([0.,1.,0.,0.])
+#laserDirHomog = np.array([-1.* np.cos(laserRadian), np.sin(laserRadian), 0., 0.])
 zeros = np.zeros_like(laserRadian)
 ones = np.ones_like(laserRadian)
-np.concatenate( (-1.* np.cos(laserRadian), np.sin(laserRadian),zeros,zeros) ,axis=1)
+#laserDirHomog = np.array([-1.* np.cos(laserRadian), zeros, np.sin(laserRadian),zeros]).T
 
+#print pointcloud
+#print laserDirHomogs
 def planeMat(laserDirHomog):
+
  	return np.stack((PLaserHomog, upDirHomog, laserDirHomog))
 
 def colminor(mat,j):
@@ -102,12 +118,12 @@ def colminor(mat,j):
 
 #The homogenous vector describing the plane coming off of the line laser. p dot x = 0 if x is on plane
 
-laserPlaneHomog = np.array(map(lambda j: colminor(planeMat, j) , range(4)))
-
-laserPlaneHomogs = map(lambda laserDirH: np.array(map(lambda j: colminor(planeMat(laserDirH), j) , range(4))) , laserDirHomog)
+#laserPlaneHomog = np.array(map(lambda j: colminor(planeMat, j) , range(4)))
+print "Calculating Laser Planes"
+laserPlaneHomogs = map(lambda laserDirH: np.asarray(map(lambda j: colminor(planeMat(laserDirH), j) , range(4))) , laserDirHomogs)
 laserPlaneHomogs = np.asarray(laserPlaneHomogs)
 
-
+#print laserPlaneHomogs
 
 
 
@@ -116,19 +132,33 @@ def pixelDir(pointcloud):
 	# pix / f = objsize / objdist
 	# f = pix * objdist / objsize
 	f = focal #100. #camera Width of 1m object at 1m in pixels, or 8m object at 8m. 
-	return np.concatenate( (pointcloud[:,:2]/f,zeros,zeros) ,axis=1)
+	return np.array([(pointcloud[:,0]-width/2)/f,(pointcloud[:,1]-height/2)/f,ones,zeros]).T #I could have replaced the ones with f.
 
-cameraRay = pixelDir(pointcloud)
+pixelDirs = pixelDir(pointcloud)
+#print pixelDirs
 
 
-posHomog = np.tensordot(cameraRay, laserPlaneHomog, axes=([1],[1])) * PCameraHomog - np.tensordot(PCameraHomog, laserPlaneHomog,  axes=([0],[1])) * cameraRay
-
+#posHomog = map(lambda laserPlaneHomog: map(lambda cameraRay: np.dot(cameraRay, laserPlaneHomog) * PCameraHomog - np.dot(PCameraHomog, laserPlaneHomog) * cameraRay, pixelDirs), laserPlaneHomogs)
+posHomog = np.zeros_like(pixelDirs)
+'''
+print pointcloud[-1,:]
+print pixelDirs[-1,:]
+print laserPlaneHomogs[-1,:]
+print PCameraHomog
+print np.dot(pixelDirs[-1,:], laserPlaneHomogs[-1,:]) * PCameraHomog - np.dot(PCameraHomog, laserPlaneHomogs[-1,:]) * pixelDirs[-1,:]
+'''
+print "Calculating points"
+for i in range(pixelDirs.shape[0]):
+	#print pointcloud[i,2]
+	posHomog[i,:] = np.dot(pixelDirs[i,:], laserPlaneHomogs[pointcloud[i,2],:]) * PCameraHomog - np.dot(PCameraHomog, laserPlaneHomogs[pointcloud[i,2],:]) * pixelDirs[i,:]
+#print posHomog
+#posHomog = np.asarray(posHomog)
 
 def removeHomog(posHomog):
 	return np.asarray( map(lambda x: x[:3]/x[3] , posHomog))
 
 pointCloud = removeHomog(posHomog)
-
+print pointCloud
 
 def writePointCloud(pointcloud):
 	f = open(filename, "w")
